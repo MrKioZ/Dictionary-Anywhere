@@ -1,31 +1,74 @@
 const GOOGLE_SPEECH_URI = 'https://www.google.com/speech-api/v1/synthesize',
-
     DEFAULT_HISTORY_SETTING = {
         enabled: true
     };
 
 browser.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const { word, lang } = request, 
-        url = `https://www.google.com/search?hl=${lang}&q=define+${word}&gl=US`;
-    
-    fetch(url, { 
+        url = `https://api.dictionaryapi.dev/api/v2/entries/${lang}/${word}`;
+
+    try {
+        fetch(url, { 
             method: 'GET',
             credentials: 'omit'
         })
-        .then((response) => response.text())
-        .then((text) => {
-            const document = new DOMParser().parseFromString(text, 'text/html'),
-                content = extractMeaning(document, { word, lang });
-
-            sendResponse({ content });
-
-            content && browser.storage.local.get().then((results) => {
-                let history = results.history || DEFAULT_HISTORY_SETTING;
+            .then(response => {
+                if (!response.ok) {
+                    if (response.status === 404) {
+                        return { isError: true, status: 404 }; // Return a sentinel object instead of undefined
+                    }
+                    // Optionally handle other statuses
+                    return { isError: true, status: response.status };
+                }
+                return response.json(); // Only parse JSON if response is OK
+            })
+            .then(data => {
+                // Handle error case from the first .then
+                if (data && data.isError) {
+                    if (data.status === 404) {
+                        return sendResponse({});
+                    }
+                    // Optionally handle other errors
+                    return sendResponse({});
+                }
         
-                history.enabled && saveWord(content)
+                // At this point, data is the parsed JSON (array) from a successful response
+                const [result] = data; // Destructure the first item from the array
+        
+                if (result && result.title === 'No Definitions Found') {
+                    return sendResponse({ content: {} });
+                }
+        
+                const { word, phonetic, phonetics, meanings, license, sourceUrls } = result,
+                    content = {
+                        word,
+                        phonetic,
+                        audioSrc: phonetics[0] && phonetics[0].audio,
+                        meaning: meanings[0].definitions[0].definition,
+                        license,
+                        sourceUrls
+                    };
+        
+                sendResponse({ content });
+        
+                // Handle storage logic
+                if (content) {
+                    browser.storage.local.get().then((results) => {
+                        let history = results.history || DEFAULT_HISTORY_SETTING;
+                        if (history.enabled) {
+                            saveWord(content);
+                        }
+                    });
+                }
+            })
+            .catch(error => {
+                // Catch any unexpected errors (e.g., network failure, invalid JSON)
+                console.error('Fetch error:', error);
+                sendResponse({});
             });
-        })
-
+    } catch (error) {
+        console.error('dictionary api error', error);
+    }    
     return true;
 });
 
